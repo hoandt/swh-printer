@@ -183,12 +183,56 @@ class ModernPrintGatewayGUI:
             self._current_frame.destroy()
             self._current_frame = None
 
+    # ── Session persistence (Remember Me) ──────────────────────────────────────
+
+    _SESSION_FILE = ".session.json"
+    _REMEMBER_DAYS = 7
+
+    def _load_saved_session(self) -> dict:
+        """Return saved credentials if within 7-day window, else empty dict."""
+        import json as _json
+        from datetime import datetime, timezone
+        try:
+            if not os.path.exists(self._SESSION_FILE):
+                return {}
+            with open(self._SESSION_FILE, "r") as f:
+                data = _json.load(f)
+            expires = datetime.fromisoformat(data.get("expires", ""))
+            if datetime.now(timezone.utc) < expires:
+                return data
+        except Exception:
+            pass
+        return {}
+
+    def _save_session(self, username: str, password: str):
+        """Persist credentials encrypted-at-rest is outside scope; store plaintext for now."""
+        import json as _json
+        from datetime import datetime, timezone, timedelta
+        expires = (datetime.now(timezone.utc) + timedelta(days=self._REMEMBER_DAYS)).isoformat()
+        try:
+            with open(self._SESSION_FILE, "w") as f:
+                _json.dump({"username": username, "password": password, "expires": expires}, f)
+        except Exception as exc:
+            logger.warning(f"Could not save session: {exc}")
+
+    def _clear_session(self):
+        """Wipe the saved session file on logout."""
+        try:
+            if os.path.exists(self._SESSION_FILE):
+                os.remove(self._SESSION_FILE)
+        except Exception:
+            pass
+
+    # ── Login screen ──────────────────────────────────────────────────
+
     def show_login_screen(self):
         """Display the SwiftHub login screen."""
-        self.stop_polling_action() if self.is_polling else None
         self._clear_screen()
-        self.root.geometry("440x480")
-        self.root.minsize(400, 440)
+        self.root.geometry("440x530")
+        self.root.minsize(400, 490)
+
+        # Pre-fill from saved session
+        saved = self._load_saved_session()
 
         frame = tk.Frame(self.root, bg=self.colors["bg"])
         frame.pack(fill="both", expand=True)
@@ -198,7 +242,7 @@ class ModernPrintGatewayGUI:
         tk.Label(
             frame, text="🖨️", font=("Helvetica", 40),
             bg=self.colors["bg"], fg=self.colors["primary"]
-        ).pack(pady=(50, 4))
+        ).pack(pady=(40, 4))
         tk.Label(
             frame, text="Print Gateway",
             font=(".AppleSystemUIFont", 22, "bold") if os.name != "nt" else ("Segoe UI", 22, "bold"),
@@ -207,7 +251,7 @@ class ModernPrintGatewayGUI:
         tk.Label(
             frame, text="Sign in with your SwiftHub account",
             font=("Helvetica", 11), fg=self.colors["text_muted"], bg=self.colors["bg"]
-        ).pack(pady=(4, 30))
+        ).pack(pady=(4, 20))
 
         # ── Login Card ──
         card = tk.Frame(frame, bg=self.colors["card"], padx=30, pady=24,
@@ -217,7 +261,7 @@ class ModernPrintGatewayGUI:
         tk.Label(card, text="Email / Username", font=("Helvetica", 10, "bold"),
                  fg=self.colors["text_muted"], bg=self.colors["card"]).pack(anchor="w")
 
-        self._login_var = tk.StringVar()
+        self._login_var = tk.StringVar(value=saved.get("username", ""))
         login_entry = tk.Entry(
             card, textvariable=self._login_var,
             font=("Helvetica", 12), bg=self.colors["bg"],
@@ -225,21 +269,37 @@ class ModernPrintGatewayGUI:
             bd=1, relief="solid", width=28
         )
         login_entry.pack(fill="x", pady=(4, 10))
-        login_entry.focus_set()
 
         tk.Label(card, text="Password", font=("Helvetica", 10, "bold"),
                  fg=self.colors["text_muted"], bg=self.colors["card"]).pack(anchor="w")
 
-        self._pass_var = tk.StringVar()
+        self._pass_var = tk.StringVar(value=saved.get("password", ""))
         pass_entry = tk.Entry(
             card, textvariable=self._pass_var, show="●",
             font=("Helvetica", 12), bg=self.colors["bg"],
             fg=self.colors["text"], insertbackground=self.colors["text"],
             bd=1, relief="solid", width=28
         )
-        pass_entry.pack(fill="x", pady=(4, 14))
+        pass_entry.pack(fill="x", pady=(4, 10))
 
-        # Error label (hidden until needed)
+        # ── Remember Me checkbox ──
+        remember_row = tk.Frame(card, bg=self.colors["card"])
+        remember_row.pack(fill="x", pady=(0, 6))
+        self._remember_var = tk.BooleanVar(value=bool(saved))
+        tk.Checkbutton(
+            remember_row,
+            text=f"Remember me for {self._REMEMBER_DAYS} days",
+            variable=self._remember_var,
+            bg=self.colors["card"],
+            fg=self.colors["text_muted"],
+            selectcolor=self.colors["bg"],
+            activebackground=self.colors["card"],
+            activeforeground=self.colors["text"],
+            font=("Helvetica", 9),
+            bd=0, highlightthickness=0
+        ).pack(side="left")
+
+        # Error label
         self._login_err = tk.Label(
             card, text="", font=("Helvetica", 9),
             fg=self.colors["danger"], bg=self.colors["card"], wraplength=300
@@ -257,6 +317,12 @@ class ModernPrintGatewayGUI:
         )
         self._login_btn.pack(fill="x", pady=(8, 0))
 
+        # Focus: password field if username already filled, else username
+        if saved.get("username"):
+            pass_entry.focus_set()
+        else:
+            login_entry.focus_set()
+
         # Allow Enter key on either field to trigger login
         login_entry.bind("<Return>", lambda _e: self._do_login())
         pass_entry.bind("<Return>", lambda _e: self._do_login())
@@ -265,6 +331,7 @@ class ModernPrintGatewayGUI:
         """Authenticate via SwiftHub in a background thread."""
         username = self._login_var.get().strip()
         password = self._pass_var.get()
+        remember = self._remember_var.get()
         if not username:
             self._login_err.config(text="Please enter your email or username.")
             return
@@ -279,10 +346,12 @@ class ModernPrintGatewayGUI:
         def _attempt():
             try:
                 result = auth.login_user(username, password)
-                # Success — transition to dashboard on the main thread
+                if remember:
+                    self._save_session(username, password)
+                else:
+                    self._clear_session()
                 self.root.after(0, lambda: self._on_login_success(result))
             except Exception as exc:
-                # Capture exc as default arg to avoid Python 3.14 closure issue
                 self.root.after(0, lambda msg=str(exc): self._on_login_error(msg))
 
         threading.Thread(target=_attempt, daemon=True).start()
@@ -540,7 +609,7 @@ class ModernPrintGatewayGUI:
         self.btn_logout = ModernButton(
             actions_card,
             text="Logout 🔓",
-            command=self.show_login_screen,
+            command=self.do_logout,
             bg_color="#4b5563",
             fg_color="white",
             hover_color="#374151",
@@ -616,10 +685,31 @@ class ModernPrintGatewayGUI:
         self.polling_thread.start()
         logger.info("Gateway Polling Engine successfully started.")
 
-    def stop_polling_action(self):
+    def _terminate_polling(self):
+        """Fully terminate the polling thread (used on logout)."""
         self.is_polling = False
         self.stop_event.set()
-        # btn_poll / status indicator only exist when dashboard is shown
+        if self.polling_thread and self.polling_thread.is_alive():
+            self.polling_thread.join(timeout=2)
+        self.polling_thread = None
+        self.stop_event.clear()
+        logger.info("Gateway Polling Engine terminated.")
+
+    def do_logout(self):
+        """Terminate polling, wipe in-memory auth, return to login screen."""
+        self._terminate_polling()
+        # Clear in-memory auth state
+        self._user_token = None
+        self._user_id    = None
+        self._user_email = None
+        self._user_info  = {}
+        logger.info("User logged out.")
+        self.show_login_screen()
+
+    def stop_polling_action(self):
+        """Pause polling (keeps session active)."""
+        self.is_polling = False
+        self.stop_event.set()
         if hasattr(self, "btn_poll"):
             self.btn_poll.config(text="Start Polling Gateway", bg=self.colors["success"])
         if hasattr(self, "status_canvas"):
