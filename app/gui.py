@@ -1,9 +1,12 @@
 import os
+import uuid
 import queue
 import logging
 import threading
 import webbrowser
 from datetime import datetime
+
+from app import auth
 
 # Graceful import check for Tkinter support
 try:
@@ -136,9 +139,10 @@ class ModernPrintGatewayGUI:
         self.is_polling = False
         self.polling_thread = None
         self.stop_event = threading.Event()
+        self._current_frame = None
 
         # Window configuration
-        self.root.title("Print Gateway Control Center")
+        self.root.title("Print Gateway — SwiftHub")
         self.root.geometry("750x580")
         self.root.minsize(700, 520)
         self.root.configure(bg="#0b0f19")
@@ -161,17 +165,134 @@ class ModernPrintGatewayGUI:
         # Apply custom theme styling to ttk
         self.style = ttk.Style()
         self.style.theme_use("clam")
-        
-        # Configure frames and elements
         self.style.configure("TFrame", background=self.colors["bg"])
         self.style.configure("Card.TFrame", background=self.colors["card"], borderwidth=1, relief="solid")
-        
-        self.create_widgets()
-        self.start_polling_action() # Auto-start polling on UI launch
 
-        # Set up periodic polling of log queue
+        # Set up periodic tasks (safe to start before login)
         self.root.after(100, self.poll_logs)
         self.root.after(1000, self.update_statistics)
+
+        # Show login screen first
+        self.show_login_screen()
+
+    # ── Screen helpers ───────────────────────────────────────────────────────
+
+    def _clear_screen(self):
+        """Destroy the current screen frame entirely."""
+        if self._current_frame:
+            self._current_frame.destroy()
+            self._current_frame = None
+
+    def show_login_screen(self):
+        """Display the SwiftHub login screen."""
+        self.stop_polling_action() if self.is_polling else None
+        self._clear_screen()
+        self.root.geometry("440x480")
+        self.root.minsize(400, 440)
+
+        frame = tk.Frame(self.root, bg=self.colors["bg"])
+        frame.pack(fill="both", expand=True)
+        self._current_frame = frame
+
+        # ── Logo / Branding ──
+        tk.Label(
+            frame, text="🖨️", font=("Helvetica", 40),
+            bg=self.colors["bg"], fg=self.colors["primary"]
+        ).pack(pady=(50, 4))
+        tk.Label(
+            frame, text="Print Gateway",
+            font=(".AppleSystemUIFont", 22, "bold") if os.name != "nt" else ("Segoe UI", 22, "bold"),
+            fg=self.colors["text"], bg=self.colors["bg"]
+        ).pack()
+        tk.Label(
+            frame, text="Sign in with your SwiftHub account",
+            font=("Helvetica", 11), fg=self.colors["text_muted"], bg=self.colors["bg"]
+        ).pack(pady=(4, 30))
+
+        # ── Login Card ──
+        card = tk.Frame(frame, bg=self.colors["card"], padx=30, pady=24,
+                        bd=1, relief="solid")
+        card.pack(fill="x", padx=40)
+
+        tk.Label(card, text="Email / Username", font=("Helvetica", 10, "bold"),
+                 fg=self.colors["text_muted"], bg=self.colors["card"]).pack(anchor="w")
+
+        self._login_var = tk.StringVar()
+        login_entry = tk.Entry(
+            card, textvariable=self._login_var,
+            font=("Helvetica", 12), bg=self.colors["bg"],
+            fg=self.colors["text"], insertbackground=self.colors["text"],
+            bd=1, relief="solid", width=28
+        )
+        login_entry.pack(fill="x", pady=(4, 14))
+        login_entry.focus_set()
+
+        # Error label (hidden until needed)
+        self._login_err = tk.Label(
+            card, text="", font=("Helvetica", 9),
+            fg=self.colors["danger"], bg=self.colors["card"], wraplength=300
+        )
+        self._login_err.pack(fill="x")
+
+        self._login_btn = ModernButton(
+            card, text="Sign In  →",
+            command=self._do_login,
+            bg_color=self.colors["primary"],
+            fg_color="white",
+            hover_color=self.colors["primary_hover"],
+            font=("Helvetica", 11, "bold"),
+            pady=8, padx=20
+        )
+        self._login_btn.pack(fill="x", pady=(8, 0))
+
+        # Allow Enter key to trigger login
+        login_entry.bind("<Return>", lambda e: self._do_login())
+
+    def _do_login(self):
+        """Authenticate via SwiftHub in a background thread."""
+        username = self._login_var.get().strip()
+        if not username:
+            self._login_err.config(text="Please enter your email or username.")
+            return
+
+        self._login_err.config(text="")
+        self._login_btn.configure(state="disabled")
+        self._login_btn.config(text="Signing in…")
+
+        def _attempt():
+            try:
+                result = auth.login_as_user(username)
+                # Success — transition to dashboard on the main thread
+                self.root.after(0, lambda: self._on_login_success(result))
+            except LookupError as e:
+                self.root.after(0, lambda: self._on_login_error(str(e)))
+            except Exception as e:
+                self.root.after(0, lambda: self._on_login_error(f"Login failed: {e}"))
+
+        threading.Thread(target=_attempt, daemon=True).start()
+
+    def _on_login_error(self, msg: str):
+        self._login_err.config(text=msg)
+        self._login_btn.configure(state="normal")
+        self._login_btn.config(text="Sign In  →")
+
+    def _on_login_success(self, result: dict):
+        """Set Station ID from the authenticated user and open dashboard."""
+        username = result["userName"]
+        # Use the username itself as the unique Station ID
+        Config.STATION_ID = username
+        self.gateway.session.headers.update({"X-Station-ID": Config.STATION_ID})
+        DashboardState.station_id = Config.STATION_ID
+        logger.info(f"Authenticated as: {username} — Station ID set.")
+        self.show_dashboard()
+
+    def show_dashboard(self):
+        """Transition from login screen to the main dashboard."""
+        self._clear_screen()
+        self.root.geometry("750x580")
+        self.root.minsize(700, 520)
+        self.create_widgets()
+        self.start_polling_action()
 
     def create_widgets(self):
         # 1. HEADER SECTION
@@ -368,6 +489,19 @@ class ModernPrintGatewayGUI:
         )
         self.btn_dash.pack(fill="x", pady=4)
 
+        self.btn_switch = ModernButton(
+            actions_card,
+            text="Switch User 🔄",
+            command=self.show_login_screen,
+            bg_color="#4b5563",
+            fg_color="white",
+            hover_color="#374151",
+            font=("Helvetica", 10, "bold"),
+            pady=6,
+            padx=15
+        )
+        self.btn_switch.pack(fill="x", pady=4)
+
         # 3. CONSOLE LOGS SECTION
         console_lbl = tk.Label(
             main_content, 
@@ -493,23 +627,25 @@ class ModernPrintGatewayGUI:
 
     def poll_logs(self):
         # Poll logs thread-safely from the logging queue
-        while True:
-            try:
-                msg = log_queue.get_nowait()
-                self.console_txt.insert(tk.END, msg + "\n")
-                self.console_txt.see(tk.END)
-                log_queue.task_done()
-            except queue.Empty:
-                break
-        
+        # Guard: console_txt only exists after dashboard is shown
+        if hasattr(self, "console_txt"):
+            while True:
+                try:
+                    msg = log_queue.get_nowait()
+                    self.console_txt.insert(tk.END, msg + "\n")
+                    self.console_txt.see(tk.END)
+                    log_queue.task_done()
+                except queue.Empty:
+                    break
         self.root.after(100, self.poll_logs)
 
     def update_statistics(self):
-        # Fetch status variables and display them on the card
-        total = len(DashboardState.history)
-        succeeded = len([j for j in DashboardState.history if j["status"] == "COMPLETED"])
-        failed = total - succeeded
-        self.stats_val.config(text=f"{succeeded} Succeeded / {failed} Failed")
+        # Guard: stats_val only exists after dashboard is shown
+        if hasattr(self, "stats_val"):
+            total = len(DashboardState.history)
+            succeeded = len([j for j in DashboardState.history if j["status"] == "COMPLETED"])
+            failed = total - succeeded
+            self.stats_val.config(text=f"{succeeded} Succeeded / {failed} Failed")
         self.root.after(1000, self.update_statistics)
 
 
