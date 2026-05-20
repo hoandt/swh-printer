@@ -224,8 +224,20 @@ class ModernPrintGatewayGUI:
             fg=self.colors["text"], insertbackground=self.colors["text"],
             bd=1, relief="solid", width=28
         )
-        login_entry.pack(fill="x", pady=(4, 14))
+        login_entry.pack(fill="x", pady=(4, 10))
         login_entry.focus_set()
+
+        tk.Label(card, text="Password", font=("Helvetica", 10, "bold"),
+                 fg=self.colors["text_muted"], bg=self.colors["card"]).pack(anchor="w")
+
+        self._pass_var = tk.StringVar()
+        pass_entry = tk.Entry(
+            card, textvariable=self._pass_var, show="●",
+            font=("Helvetica", 12), bg=self.colors["bg"],
+            fg=self.colors["text"], insertbackground=self.colors["text"],
+            bd=1, relief="solid", width=28
+        )
+        pass_entry.pack(fill="x", pady=(4, 14))
 
         # Error label (hidden until needed)
         self._login_err = tk.Label(
@@ -245,14 +257,19 @@ class ModernPrintGatewayGUI:
         )
         self._login_btn.pack(fill="x", pady=(8, 0))
 
-        # Allow Enter key to trigger login
-        login_entry.bind("<Return>", lambda e: self._do_login())
+        # Allow Enter key on either field to trigger login
+        login_entry.bind("<Return>", lambda _e: self._do_login())
+        pass_entry.bind("<Return>", lambda _e: self._do_login())
 
     def _do_login(self):
         """Authenticate via SwiftHub in a background thread."""
         username = self._login_var.get().strip()
+        password = self._pass_var.get()
         if not username:
             self._login_err.config(text="Please enter your email or username.")
+            return
+        if not password:
+            self._login_err.config(text="Please enter your password.")
             return
 
         self._login_err.config(text="")
@@ -261,13 +278,12 @@ class ModernPrintGatewayGUI:
 
         def _attempt():
             try:
-                result = auth.login_as_user(username)
+                result = auth.login_user(username, password)
                 # Success — transition to dashboard on the main thread
                 self.root.after(0, lambda: self._on_login_success(result))
-            except LookupError as e:
-                self.root.after(0, lambda: self._on_login_error(str(e)))
-            except Exception as e:
-                self.root.after(0, lambda: self._on_login_error(f"Login failed: {e}"))
+            except Exception as exc:
+                # Capture exc as default arg to avoid Python 3.14 closure issue
+                self.root.after(0, lambda msg=str(exc): self._on_login_error(msg))
 
         threading.Thread(target=_attempt, daemon=True).start()
 
@@ -570,9 +586,12 @@ class ModernPrintGatewayGUI:
 
     def stop_polling_action(self):
         self.is_polling = False
-        self.btn_poll.config(text="Start Polling Gateway", bg=self.colors["success"])
-        self.draw_status_indicator("PAUSED", self.colors["warning"])
         self.stop_event.set()
+        # btn_poll / status indicator only exist when dashboard is shown
+        if hasattr(self, "btn_poll"):
+            self.btn_poll.config(text="Start Polling Gateway", bg=self.colors["success"])
+        if hasattr(self, "status_canvas"):
+            self.draw_status_indicator("PAUSED", self.colors["warning"])
         logger.warning("Gateway Polling Engine paused by user.")
 
     def print_test_page(self):
