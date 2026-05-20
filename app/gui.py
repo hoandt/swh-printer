@@ -178,10 +178,10 @@ class ModernPrintGatewayGUI:
     # ── Screen helpers ───────────────────────────────────────────────────────
 
     def _clear_screen(self):
-        """Destroy the current screen frame entirely."""
-        if self._current_frame:
-            self._current_frame.destroy()
-            self._current_frame = None
+        """Destroy every widget inside the root window."""
+        for widget in self.root.winfo_children():
+            widget.destroy()
+        self._current_frame = None
 
     # ── Session persistence (Remember Me) ──────────────────────────────────────
 
@@ -407,12 +407,16 @@ class ModernPrintGatewayGUI:
         self._clear_screen()
         self.root.geometry("750x580")
         self.root.minsize(700, 520)
-        self.create_widgets()
+        # Single top-level container so _clear_screen() can destroy it all
+        dash_frame = tk.Frame(self.root, bg=self.colors["bg"])
+        dash_frame.pack(fill="both", expand=True)
+        self._current_frame = dash_frame
+        self.create_widgets(dash_frame)
         self.start_polling_action()
 
-    def create_widgets(self):
+    def create_widgets(self, parent):
         # 1. HEADER SECTION
-        header_frame = tk.Frame(self.root, bg=self.colors["bg"], pady=15, padx=20)
+        header_frame = tk.Frame(parent, bg=self.colors["bg"], pady=15, padx=20)
         header_frame.pack(fill="x", padx=20)
 
         # Title
@@ -444,7 +448,7 @@ class ModernPrintGatewayGUI:
         self.draw_status_indicator("IDLE", self.colors["warning"])
 
         # 2. STATS & CONTROLS SECTION
-        main_content = tk.Frame(self.root, bg=self.colors["bg"])
+        main_content = tk.Frame(parent, bg=self.colors["bg"])
         main_content.pack(fill="both", expand=True, padx=20)
 
         # Grid system for settings and actions
