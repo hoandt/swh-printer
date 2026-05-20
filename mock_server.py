@@ -269,17 +269,27 @@ class MockPrintServerHandler(BaseHTTPRequestHandler):
                     file_url = f"http://{host}/mock_pdf/{job_id}.pdf"
                     
                 doc_type = payload.get("document_type", "AWB")
+                target_station = payload.get("station_id")
                 
                 conn = sqlite3.connect(DB_PATH)
                 cursor = conn.cursor()
-                cursor.execute(
-                    "INSERT INTO jobs (job_id, file_url, document_type, status) VALUES (?, ?, ?, 'PENDING')",
-                    (job_id, file_url, doc_type)
-                )
+                if target_station:
+                    cursor.execute(
+                        """
+                        INSERT INTO jobs (job_id, file_url, document_type, status, claimed_by, claimed_at) 
+                        VALUES (?, ?, ?, 'CLAIMED', ?, datetime('now'))
+                        """,
+                        (job_id, file_url, doc_type, target_station)
+                    )
+                else:
+                    cursor.execute(
+                        "INSERT INTO jobs (job_id, file_url, document_type, status) VALUES (?, ?, ?, 'PENDING')",
+                        (job_id, file_url, doc_type)
+                    )
                 conn.commit()
                 conn.close()
                 
-                logger.info(f"Custom job enqueued: {job_id} -> {file_url}")
+                logger.info(f"Custom job enqueued: {job_id} -> {file_url}" + (f" (Target Station: {target_station})" if target_station else ""))
                 
                 self.send_response(201)
                 self.send_header("Content-Type", "application/json")
