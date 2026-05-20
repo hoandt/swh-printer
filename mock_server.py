@@ -18,6 +18,8 @@ logger = logging.getLogger("MockPrintServer")
 DB_PATH = os.environ.get("DATABASE_PATH", "jobs.db")
 # Set PRODUCTION=true in environment to disable auto-generating dev mock jobs
 IS_PRODUCTION = os.environ.get("PRODUCTION", "false").lower() in ("true", "1", "yes")
+# Lease/Visibility timeout in seconds (if a station claims a job but doesn't ACK within this time, it becomes re-claimable)
+CLAIM_TIMEOUT_SECONDS = int(os.environ.get("CLAIM_TIMEOUT_SECONDS", "300"))
 
 # A valid minimal PDF that renders "Mock Print Job" text
 MINIMAL_PDF = (
@@ -57,9 +59,23 @@ def init_db():
             document_type TEXT NOT NULL,
             status TEXT NOT NULL,
             error_message TEXT,
+            claimed_by TEXT,
+            claimed_at TIMESTAMP,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    
+    # Run migrations dynamically to support upgrading from older databases smoothly
+    try:
+        cursor.execute("ALTER TABLE jobs ADD COLUMN claimed_by TEXT")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+        
+    try:
+        cursor.execute("ALTER TABLE jobs ADD COLUMN claimed_at TIMESTAMP")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
     conn.commit()
     conn.close()
     logger.info(f"Database initialized at {DB_PATH}")
@@ -71,7 +87,6 @@ class MockPrintServerHandler(BaseHTTPRequestHandler):
     
     def log_message(self, format, *args):
         # Prevent BaseHTTPRequestHandler from writing raw logs to stdout
-        # We will log manually in a structured format
         pass
 
     def _send_cors_headers(self):
@@ -85,40 +100,88 @@ class MockPrintServerHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        # CORS & JSON default headers
         if self.path == "/api/v1/print/queue":
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self._send_cors_headers()
             self.end_headers()
             
+            # Read Station ID from standard header
+            station_id = self.headers.get("X-Station-ID", "UNKNOWN_STATION")
+            
             conn = sqlite3.connect(DB_PATH)
             cursor = conn.cursor()
             
-            # Fetch pending jobs
-            cursor.execute("SELECT job_id, file_url, document_type FROM jobs WHERE status = 'PENDING'")
+            # 1. Fetch any jobs already CLAIMED by this station (for retry/resume safety)
+            cursor.execute(
+                "SELECT job_id, file_url, document_type FROM jobs WHERE status = 'CLAIMED' AND claimed_by = ?",
+                (station_id,)
+            )
             rows = cursor.fetchall()
             
-            # Auto-generate a test job in development mode if queue is empty
-            if not rows and not IS_PRODUCTION:
-                cursor.execute("SELECT COUNT(*) FROM jobs")
-                total_jobs = cursor.fetchone()[0]
-                
-                if total_jobs < 3:
-                    new_id = f"job_{uuid.uuid4().hex[:8]}"
-                    host = self.headers.get("Host", "localhost:8000")
-                    file_url = f"http://{host}/mock_pdf/{new_id}.pdf"
+            # 2. If the station has no active claimed jobs, atomically claim new ones!
+            if not rows:
+                try:
+                    # BEGIN IMMEDIATE locks the SQLite database during the transaction, preventing race conditions
+                    conn.execute("BEGIN IMMEDIATE")
                     
+                    # Select jobs that are either PENDING, or CLAIMED but exceeded visibility lease timeout
                     cursor.execute(
-                        "INSERT INTO jobs (job_id, file_url, document_type, status) VALUES (?, ?, ?, ?)",
-                        (new_id, file_url, "AWB", "PENDING")
+                        """
+                        SELECT job_id FROM jobs 
+                        WHERE status = 'PENDING' 
+                           OR (status = 'CLAIMED' AND strftime('%s', 'now') - strftime('%s', claimed_at) > ?)
+                        ORDER BY created_at ASC LIMIT 5
+                        """,
+                        (CLAIM_TIMEOUT_SECONDS,)
                     )
-                    conn.commit()
-                    logger.info(f"Dev Mode: Auto-generated mock job {new_id}")
+                    pending_ids = [r[0] for r in cursor.fetchall()]
                     
-                    # Fetch again
-                    cursor.execute("SELECT job_id, file_url, document_type FROM jobs WHERE status = 'PENDING'")
-                    rows = cursor.fetchall()
+                    if pending_ids:
+                        placeholders = ",".join("?" for _ in pending_ids)
+                        # Atomically claim these jobs for this station
+                        cursor.execute(
+                            f"""
+                            UPDATE jobs 
+                            SET status = 'CLAIMED', claimed_by = ?, claimed_at = datetime('now') 
+                            WHERE job_id IN ({placeholders})
+                            """,
+                            [station_id] + pending_ids
+                        )
+                        conn.commit()
+                        logger.info(f"Station '{station_id}' atomically claimed {len(pending_ids)} job(s): {pending_ids}")
+                    else:
+                        conn.commit()
+                        
+                        # In development mode, auto-generate a new job if the queue is completely empty
+                        if not IS_PRODUCTION:
+                            cursor.execute("SELECT COUNT(*) FROM jobs")
+                            total_jobs = cursor.fetchone()[0]
+                            if total_jobs < 3:
+                                new_id = f"job_{uuid.uuid4().hex[:8]}"
+                                host = self.headers.get("Host", "localhost:8000")
+                                file_url = f"http://{host}/mock_pdf/{new_id}.pdf"
+                                
+                                conn.execute("BEGIN IMMEDIATE")
+                                cursor.execute(
+                                    """
+                                    INSERT INTO jobs (job_id, file_url, document_type, status, claimed_by, claimed_at) 
+                                    VALUES (?, ?, ?, 'CLAIMED', ?, datetime('now'))
+                                    """,
+                                    (new_id, file_url, "AWB", station_id)
+                                )
+                                conn.commit()
+                                logger.info(f"Dev Mode: Auto-generated & claimed job {new_id} for station {station_id}")
+                except Exception as e:
+                    conn.rollback()
+                    logger.error(f"Error during claim transaction for station '{station_id}': {e}")
+                
+                # Re-fetch the claimed jobs
+                cursor.execute(
+                    "SELECT job_id, file_url, document_type FROM jobs WHERE status = 'CLAIMED' AND claimed_by = ?",
+                    (station_id,)
+                )
+                rows = cursor.fetchall()
             
             data = []
             for row in rows:
@@ -210,8 +273,8 @@ class MockPrintServerHandler(BaseHTTPRequestHandler):
                 conn = sqlite3.connect(DB_PATH)
                 cursor = conn.cursor()
                 cursor.execute(
-                    "INSERT INTO jobs (job_id, file_url, document_type, status) VALUES (?, ?, ?, ?)",
-                    (job_id, file_url, doc_type, "PENDING")
+                    "INSERT INTO jobs (job_id, file_url, document_type, status) VALUES (?, ?, ?, 'PENDING')",
+                    (job_id, file_url, doc_type)
                 )
                 conn.commit()
                 conn.close()
@@ -258,6 +321,7 @@ def run_server():
     logger.info(f"==================================================")
     logger.info(f"🚀 Production-Ready Print Server running at http://{host}:{port}")
     logger.info(f"   Mode: {'PRODUCTION (No Autogen)' if IS_PRODUCTION else 'DEVELOPMENT (Auto-generating mock jobs)'}")
+    logger.info(f"   Claim Timeout: {CLAIM_TIMEOUT_SECONDS} seconds")
     logger.info(f"==================================================")
     
     try:
