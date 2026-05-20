@@ -9,8 +9,8 @@ import json
 # ==============================================================================
 
 # 1. Server Endpoint
-# The mock server runs on port 8000. We enqueued the job using '/api/v1/print/enqueue'
-URL = "http://127.0.0.1:8000/api/v1/print/enqueue"
+# The mock server runs on port 2401. We enqueued the job using '/api/v1/print/enqueue'
+URL = "http://127.0.0.1:2401/api/v1/print/enqueue"
 
 # 2. Sample Payloads
 # A. Custom external PDF URL
@@ -45,7 +45,7 @@ def submit_job(payload):
             print(f"❌ FAILED (Status Code {response.status_code}): {response.text}\n")
             
     except requests.exceptions.ConnectionError:
-        print("❌ CONNECTION ERROR: Is your mock_server.py running on http://127.0.0.1:8000?\n")
+        print("❌ CONNECTION ERROR: Is your mock_server.py running on http://127.0.0.1:2401?\n")
     except Exception as e:
         print(f"❌ ERROR: {e}\n")
 
@@ -67,12 +67,12 @@ if __name__ == "__main__":
 # You can run either of these commands directly from your terminal:
 #
 # 1. To print a custom PDF:
-#    curl -X POST http://127.0.0.1:8000/api/v1/print/enqueue \
+#    curl -X POST http://127.0.0.1:2401/api/v1/print/enqueue \
 #         -H "Content-Type: application/json" \
 #         -d '{"file_url": "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf", "document_type": "AWB"}'
 #
 # 2. To print a default mock PDF:
-#    curl -X POST http://127.0.0.1:8000/api/v1/print/enqueue \
+#    curl -X POST http://127.0.0.1:2401/api/v1/print/enqueue \
 #         -H "Content-Type: application/json" \
 #         -d '{"document_type": "PACKING_SLIP"}'
 # ==============================================================================

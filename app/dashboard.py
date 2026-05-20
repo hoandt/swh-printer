@@ -34,7 +34,7 @@ TEST_PDF_BYTES = (
 # Shared Dashboard State
 class DashboardState:
     station_id = "PACK_STATION_01"
-    api_base_url = "http://127.0.0.1:8000/api/v1/print"
+    api_base_url = "https://print.swifthub.net/api/v1/print"
     poll_interval = 5
     history = []  # list of dicts: {job_id, status, timestamp, error}
     logs_queue = deque(maxlen=100)

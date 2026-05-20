@@ -322,7 +322,7 @@ def run_server():
     
     # Read host/port from environment variables for production flexibility
     host = os.environ.get("HOST", "0.0.0.0")
-    port = int(os.environ.get("PORT", 8000))
+    port = int(os.environ.get("PORT", 2401))
     
     server_address = (host, port)
     # ThreadingHTTPServer handles each incoming request concurrently in a thread pool

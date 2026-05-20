@@ -6,7 +6,7 @@ load_dotenv()
 class Config:
     API_BASE_URL = os.getenv(
         "API_BASE_URL",
-        "http://127.0.0.1:8000/api/v1/print"
+        "https://print.swifthub.net/api/v1/print"
     )
 
     POLL_INTERVAL = int(
