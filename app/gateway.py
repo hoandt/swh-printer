@@ -6,7 +6,7 @@ import requests
 from app.config import Config
 from app.logger import logger
 from app.printer_service import PrinterService
-from app.dashboard import start_dashboard_server, DashboardState
+from app.dashboard import DashboardState
 
 
 class PrintGateway:
@@ -21,11 +21,10 @@ class PrintGateway:
 
         self.processed_jobs = set()
 
-        # Initialize dashboard settings and start dashboard UI in a background thread
+        # Initialize dashboard settings
         DashboardState.station_id = Config.STATION_ID
         DashboardState.api_base_url = Config.API_BASE_URL
         DashboardState.poll_interval = Config.POLL_INTERVAL
-        start_dashboard_server(port=5001)
 
     # ========================================
     # FETCH QUEUE

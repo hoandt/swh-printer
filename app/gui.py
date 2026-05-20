@@ -19,7 +19,7 @@ except ImportError:
 from app.config import Config
 from app.logger import logger
 from app.printer_service import PrinterService
-from app.dashboard import start_dashboard_server, DashboardState
+from app.dashboard import DashboardState
 
 # Queue to transport logs thread-safely from the background to the UI
 log_queue = queue.Queue()
@@ -408,6 +408,15 @@ class ModernPrintGatewayGUI:
         tenant  = info.get("tenantName", "")
         display = f"{name}  •  {tenant}" if tenant else name
         self._sub_lbl.config(text=display)
+        
+        # Update profile labels if they exist
+        if hasattr(self, "profile_labels"):
+            self.profile_labels["name"].config(text=name)
+            self.profile_labels["email"].config(text=info.get("email") or self._user_email)
+            self.profile_labels["tenant"].config(text=tenant or "None")
+            self.profile_labels["type"].config(text=info.get("userTypeName") or "N/A")
+            roles = info.get("userRoles", [])
+            self.profile_labels["roles"].config(text=", ".join(roles) if roles else "None")
 
     def show_dashboard(self):
         """Transition from login screen to the main dashboard."""
@@ -462,10 +471,10 @@ class ModernPrintGatewayGUI:
         top_grid = tk.Frame(main_content, bg=self.colors["bg"])
         top_grid.pack(fill="x", pady=10)
 
-        # --- Left Side: Configuration Card ---
+        # --- Left Side: Subscription Profile Card ---
         config_card = tk.LabelFrame(
             top_grid, 
-            text=" CONFIGURATION ", 
+            text=" SUBSCRIPTION PROFILE ", 
             font=(".AppleSystemUIFont", 9, "bold") if os.name != "nt" else ("Segoe UI", 9, "bold"),
             fg=self.colors["primary"],
             bg=self.colors["card"],
@@ -477,33 +486,27 @@ class ModernPrintGatewayGUI:
         config_card.pack(side="left", fill="both", expand=True, padx=(0, 10))
         config_card.configure(fg=self.colors["primary"])
 
-        # Config fields
-        endpoint_lbl = tk.Label(config_card, text="Endpoint:", font=("Helvetica", 10, "bold"), fg=self.colors["text_muted"], bg=self.colors["card"])
-        endpoint_lbl.grid(row=0, column=0, sticky="w", pady=3)
-        self.endpoint_val = tk.Label(config_card, text=Config.API_BASE_URL, font=("Courier", 10), fg=self.colors["text"], bg=self.colors["card"])
-        self.endpoint_val.grid(row=0, column=1, sticky="w", padx=10, pady=3)
-
-        interval_lbl = tk.Label(config_card, text="Interval:", font=("Helvetica", 10, "bold"), fg=self.colors["text_muted"], bg=self.colors["card"])
-        interval_lbl.grid(row=1, column=0, sticky="w", pady=3)
-        self.interval_val = tk.Label(config_card, text=f"{Config.POLL_INTERVAL} seconds", font=("Helvetica", 10), fg=self.colors["text"], bg=self.colors["card"])
-        self.interval_val.grid(row=1, column=1, sticky="w", padx=10, pady=3)
-
-        stats_lbl = tk.Label(config_card, text="Processed:", font=("Helvetica", 10, "bold"), fg=self.colors["text_muted"], bg=self.colors["card"])
-        stats_lbl.grid(row=2, column=0, sticky="w", pady=3)
-        self.stats_val = tk.Label(config_card, text="0 Succeeded / 0 Failed", font=("Helvetica", 10), fg=self.colors["text"], bg=self.colors["card"])
-        self.stats_val.grid(row=2, column=1, sticky="w", padx=10, pady=3)
+        # Profile fields
+        self.profile_labels = {}
+        row_idx = 0
+        for key, display in [("name", "Name:"), ("email", "Email:"), ("tenant", "Tenant:"), ("type", "Type:"), ("roles", "Roles:")]:
+            lbl = tk.Label(config_card, text=display, font=("Helvetica", 10, "bold"), fg=self.colors["text_muted"], bg=self.colors["card"])
+            lbl.grid(row=row_idx, column=0, sticky="w", pady=3)
+            val = tk.Label(config_card, text="Loading...", font=("Helvetica", 10), fg=self.colors["text"], bg=self.colors["card"])
+            val.grid(row=row_idx, column=1, sticky="w", padx=10, pady=3)
+            self.profile_labels[key] = val
+            row_idx += 1
 
         # Printer selection dropdown
         printer_lbl = tk.Label(config_card, text="Printer:", font=("Helvetica", 10, "bold"), fg=self.colors["text_muted"], bg=self.colors["card"])
-        printer_lbl.grid(row=3, column=0, sticky="nw", pady=6)
+        printer_lbl.grid(row=row_idx, column=0, sticky="nw", pady=6)
 
         printer_frame = tk.Frame(config_card, bg=self.colors["card"])
-        printer_frame.grid(row=3, column=1, sticky="w", padx=10, pady=3)
+        printer_frame.grid(row=row_idx, column=1, sticky="w", padx=10, pady=3)
 
         # Restore saved printer from session
         saved_session = self._load_saved_session()
         saved_printer  = saved_session.get("printer", Config.SELECTED_PRINTER)
-        saved_locked   = saved_session.get("printer_locked", False)
         if saved_printer and saved_printer != "Default System Printer":
             Config.SELECTED_PRINTER = saved_printer
 
@@ -517,65 +520,14 @@ class ModernPrintGatewayGUI:
         )
         self.printer_dropdown.pack(side="left", padx=(0, 5))
 
+        self.lock_var = tk.BooleanVar(value=True)
+
         def on_printer_select(event):
             Config.SELECTED_PRINTER = self.printer_var.get()
             self._persist_printer_state()
             logger.info(f"Selected printer updated to: {Config.SELECTED_PRINTER}")
 
         self.printer_dropdown.bind("<<ComboboxSelected>>", on_printer_select)
-
-        self.lock_var = tk.BooleanVar(value=saved_locked)
-        self.lock_checkbox = tk.Checkbutton(
-            printer_frame,
-            text="Lock",
-            variable=self.lock_var,
-            onvalue=True,
-            offvalue=False,
-            bg=self.colors["card"],
-            fg=self.colors["text_muted"],
-            selectcolor=self.colors["bg"],
-            activebackground=self.colors["card"],
-            activeforeground=self.colors["text"],
-            font=("Helvetica", 9, "bold"),
-            command=self.toggle_printer_lock,
-            bd=0,
-            highlightthickness=0
-        )
-        self.lock_checkbox.pack(side="left")
-
-        # Apply saved lock state immediately
-        if saved_locked:
-            self.printer_dropdown.config(state="disabled")
-            logger.info(f"Printer auto-locked from session: {Config.SELECTED_PRINTER}")
-
-        # Station ID Configuration Field
-        station_lbl = tk.Label(config_card, text="Station ID:", font=("Helvetica", 10, "bold"), fg=self.colors["text_muted"], bg=self.colors["card"])
-        station_lbl.grid(row=4, column=0, sticky="w", pady=6)
-
-        self.station_var = tk.StringVar(value=Config.STATION_ID)
-        self.station_entry = tk.Entry(
-            config_card,
-            textvariable=self.station_var,
-            font=("Helvetica", 10),
-            bg=self.colors["bg"],
-            fg=self.colors["text"],
-            insertbackground=self.colors["text"],
-            bd=1,
-            relief="solid",
-            width=20
-        )
-        self.station_entry.grid(row=4, column=1, sticky="w", padx=10, pady=3)
-
-        def on_station_change(*args):
-            Config.STATION_ID = self.station_var.get().strip() or "UNKNOWN_STATION"
-            # Update the session header dynamically!
-            self.gateway.session.headers.update({
-                "X-Station-ID": Config.STATION_ID
-            })
-            DashboardState.station_id = Config.STATION_ID
-            logger.info(f"Station ID updated to: {Config.STATION_ID}")
-
-        self.station_var.trace_add("write", on_station_change)
 
         # --- Right Side: Actions Card ---
         actions_card = tk.LabelFrame(
@@ -617,19 +569,6 @@ class ModernPrintGatewayGUI:
         )
         self.btn_test.pack(fill="x", pady=4)
 
-        self.btn_dash = ModernButton(
-            actions_card,
-            text="Open Web Dashboard 🖥️",
-            command=lambda: webbrowser.open("http://localhost:5001"),
-            bg_color="#4b5563",
-            fg_color="white",
-            hover_color="#374151",
-            font=("Helvetica", 10, "bold"),
-            pady=6,
-            padx=15
-        )
-        self.btn_dash.pack(fill="x", pady=4)
-
         self.btn_logout = ModernButton(
             actions_card,
             text="Logout 🔓",
@@ -643,37 +582,7 @@ class ModernPrintGatewayGUI:
         )
         self.btn_logout.pack(fill="x", pady=4)
 
-        # 3. CONSOLE LOGS SECTION
-        console_lbl = tk.Label(
-            main_content, 
-            text="📟 SYSTEM LOGSTREAM", 
-            font=(".AppleSystemUIFont", 10, "bold") if os.name != "nt" else ("Segoe UI", 10, "bold"), 
-            fg=self.colors["text_muted"], 
-            bg=self.colors["bg"]
-        )
-        console_lbl.pack(anchor="w", pady=(15, 5))
-
-        console_frame = tk.Frame(main_content, bg=self.colors["console_bg"])
-        console_frame.pack(fill="both", expand=True, pady=(0, 15))
-
-        self.console_txt = tk.Text(
-            console_frame,
-            bg=self.colors["console_bg"],
-            fg="#10b981",  # Terminal green
-            font=("Courier", 10) if os.name != "nt" else ("Consolas", 10),
-            wrap="word",
-            bd=0,
-            padx=10,
-            pady=10,
-            insertbackground="white"
-        )
-        self.console_txt.pack(side="left", fill="both", expand=True)
-
-        scrollbar = tk.Scrollbar(console_frame, bg=self.colors["console_bg"])
-        scrollbar.pack(side="right", fill="y")
-
-        self.console_txt.config(yscrollcommand=scrollbar.set)
-        scrollbar.config(command=self.console_txt.yview)
+        # 3. (Console logs section removed to keep UI simple)
 
     def draw_status_indicator(self, text, color):
         self.status_canvas.delete("all")
@@ -784,7 +693,11 @@ class ModernPrintGatewayGUI:
             finally:
                 if os.path.exists(temp_path):
                     os.remove(temp_path)
-                self.root.after(0, lambda: self.btn_test.config(state="normal"))
+                # Guard: btn_test may have been destroyed if user logged out mid-print
+                def _re_enable():
+                    if hasattr(self, "btn_test") and self.btn_test.winfo_exists():
+                        self.btn_test.config(state="normal")
+                self.root.after(0, _re_enable)
 
         threading.Thread(target=print_task, daemon=True).start()
 
@@ -807,23 +720,27 @@ class ModernPrintGatewayGUI:
                     break
                 threading.Event().wait(0.1)
 
+    def _widget_alive(self, attr: str) -> bool:
+        """Return True only if the named widget attribute exists AND has not been destroyed."""
+        try:
+            w = getattr(self, attr, None)
+            return w is not None and w.winfo_exists()
+        except Exception:
+            return False
+
     def poll_logs(self):
-        # Poll logs thread-safely from the logging queue
-        # Guard: console_txt only exists after dashboard is shown
-        if hasattr(self, "console_txt"):
-            while True:
-                try:
-                    msg = log_queue.get_nowait()
-                    self.console_txt.insert(tk.END, msg + "\n")
-                    self.console_txt.see(tk.END)
-                    log_queue.task_done()
-                except queue.Empty:
-                    break
+        """Poll logs thread-safely and discard them to prevent memory leak."""
+        while True:
+            try:
+                log_queue.get_nowait()
+                log_queue.task_done()
+            except queue.Empty:
+                break
         self.root.after(100, self.poll_logs)
 
     def update_statistics(self):
-        # Guard: stats_val only exists after dashboard is shown
-        if hasattr(self, "stats_val"):
+        """Update job stats label; skips if the label has been destroyed."""
+        if self._widget_alive("stats_val"):
             total = len(DashboardState.history)
             succeeded = len([j for j in DashboardState.history if j["status"] == "COMPLETED"])
             failed = total - succeeded

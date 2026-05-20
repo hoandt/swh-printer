@@ -35,7 +35,7 @@ def _decode_jwt_exp(token: str) -> float:
 
 # ── HTTP helper ──────────────────────────────────────────────────────────────
 
-def _post_json(url: str, payload: dict, token: str | None = None, timeout: int = 15) -> dict:
+def _post_json(url: str, payload: dict, token: "Optional[str]" = None, timeout: int = 15) -> dict:
     """POST JSON, return parsed response dict, raise RuntimeError on failure."""
     data = json.dumps(payload).encode()
     headers = {
