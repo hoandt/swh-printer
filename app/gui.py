@@ -205,13 +205,20 @@ class ModernPrintGatewayGUI:
         return {}
 
     def _save_session(self, username: str, password: str):
-        """Persist credentials encrypted-at-rest is outside scope; store plaintext for now."""
+        """Persist credentials + printer preference to .session.json."""
         import json as _json
         from datetime import datetime, timezone, timedelta
         expires = (datetime.now(timezone.utc) + timedelta(days=self._REMEMBER_DAYS)).isoformat()
+        data = {
+            "username":       username,
+            "password":       password,
+            "expires":        expires,
+            "printer":        Config.SELECTED_PRINTER,
+            "printer_locked": getattr(self, "_saved_printer_locked", False),
+        }
         try:
             with open(self._SESSION_FILE, "w") as f:
-                _json.dump({"username": username, "password": password, "expires": expires}, f)
+                _json.dump(data, f)
         except Exception as exc:
             logger.warning(f"Could not save session: {exc}")
 
@@ -493,6 +500,13 @@ class ModernPrintGatewayGUI:
         printer_frame = tk.Frame(config_card, bg=self.colors["card"])
         printer_frame.grid(row=3, column=1, sticky="w", padx=10, pady=3)
 
+        # Restore saved printer from session
+        saved_session = self._load_saved_session()
+        saved_printer  = saved_session.get("printer", Config.SELECTED_PRINTER)
+        saved_locked   = saved_session.get("printer_locked", False)
+        if saved_printer and saved_printer != "Default System Printer":
+            Config.SELECTED_PRINTER = saved_printer
+
         self.printer_var = tk.StringVar(value=Config.SELECTED_PRINTER)
         self.printer_dropdown = ttk.Combobox(
             printer_frame,
@@ -505,11 +519,12 @@ class ModernPrintGatewayGUI:
 
         def on_printer_select(event):
             Config.SELECTED_PRINTER = self.printer_var.get()
+            self._persist_printer_state()
             logger.info(f"Selected printer updated to: {Config.SELECTED_PRINTER}")
 
         self.printer_dropdown.bind("<<ComboboxSelected>>", on_printer_select)
 
-        self.lock_var = tk.BooleanVar(value=False)
+        self.lock_var = tk.BooleanVar(value=saved_locked)
         self.lock_checkbox = tk.Checkbutton(
             printer_frame,
             text="Lock",
@@ -527,6 +542,11 @@ class ModernPrintGatewayGUI:
             highlightthickness=0
         )
         self.lock_checkbox.pack(side="left")
+
+        # Apply saved lock state immediately
+        if saved_locked:
+            self.printer_dropdown.config(state="disabled")
+            logger.info(f"Printer auto-locked from session: {Config.SELECTED_PRINTER}")
 
         # Station ID Configuration Field
         station_lbl = tk.Label(config_card, text="Station ID:", font=("Helvetica", 10, "bold"), fg=self.colors["text_muted"], bg=self.colors["card"])
@@ -664,6 +684,22 @@ class ModernPrintGatewayGUI:
         # Status text
         self.status_canvas.create_text(68, 17, text=text, fill=color, font=("Helvetica", 10, "bold"))
 
+    def _persist_printer_state(self):
+        """Write current printer + lock state into the session file immediately."""
+        import json as _json
+        try:
+            if not os.path.exists(self._SESSION_FILE):
+                return
+            with open(self._SESSION_FILE, "r") as f:
+                data = _json.load(f)
+            data["printer"]        = Config.SELECTED_PRINTER
+            data["printer_locked"] = self.lock_var.get()
+            self._saved_printer_locked = self.lock_var.get()
+            with open(self._SESSION_FILE, "w") as f:
+                _json.dump(data, f)
+        except Exception as exc:
+            logger.warning(f"Could not persist printer state: {exc}")
+
     def toggle_printer_lock(self):
         if self.lock_var.get():
             self.printer_dropdown.config(state="disabled")
@@ -671,6 +707,7 @@ class ModernPrintGatewayGUI:
         else:
             self.printer_dropdown.config(state="readonly")
             logger.info("Printer selection UNLOCKED")
+        self._persist_printer_state()
 
     def toggle_polling(self):
         if self.is_polling:
