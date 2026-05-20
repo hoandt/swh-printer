@@ -294,13 +294,44 @@ class ModernPrintGatewayGUI:
 
     def _on_login_success(self, result: dict):
         """Set Station ID from the authenticated user and open dashboard."""
-        username = result["userName"]
-        # Use the username itself as the unique Station ID
-        Config.STATION_ID = username
-        self.gateway.session.headers.update({"X-Station-ID": Config.STATION_ID})
+        # Store auth state on self for use across the app
+        self._user_token  = result["token"]
+        self._user_id     = result["userId"]
+        self._user_email  = result["userName"]
+        self._user_info   = {}   # populated asynchronously below
+
+        # Station ID = userId UUID (globally unique per user)
+        Config.STATION_ID = self._user_id
+        self.gateway.session.headers.update({
+            "X-Station-ID": Config.STATION_ID,
+            "Authorization": f"Bearer {self._user_token}",
+        })
         DashboardState.station_id = Config.STATION_ID
-        logger.info(f"Authenticated as: {username} — Station ID set.")
+        logger.info(f"Authenticated as: {self._user_email} (ID: {self._user_id})")
+
+        # Show dashboard immediately, then fetch full profile in background
         self.show_dashboard()
+
+        def _fetch_profile():
+            try:
+                info = auth.get_user_info(self._user_id, self._user_token)
+                self._user_info = info
+                # Update header label on the main thread once we have the name
+                self.root.after(0, self._update_user_header)
+            except Exception as exc:
+                logger.warning(f"Could not load user profile: {exc}")
+
+        threading.Thread(target=_fetch_profile, daemon=True).start()
+
+    def _update_user_header(self):
+        """Refresh the dashboard sub-label with full user info once fetched."""
+        if not hasattr(self, "_sub_lbl") or not self._user_info:
+            return
+        info = self._user_info
+        name    = info.get("fullName") or self._user_email
+        tenant  = info.get("tenantName", "")
+        display = f"{name}  •  {tenant}" if tenant else name
+        self._sub_lbl.config(text=display)
 
     def show_dashboard(self):
         """Transition from login screen to the main dashboard."""
@@ -330,12 +361,13 @@ class ModernPrintGatewayGUI:
 
         sub_lbl = tk.Label(
             title_frame,
-            text=f"Station Station ID: {Config.STATION_ID}",
+            text=self._user_email if hasattr(self, "_user_email") else Config.STATION_ID,
             font=(".AppleSystemUIFont", 11) if os.name != "nt" else ("Segoe UI", 11),
             fg=self.colors["text_muted"],
             bg=self.colors["bg"]
         )
         sub_lbl.pack(anchor="w", pady=2)
+        self._sub_lbl = sub_lbl  # keep reference for async update
 
         # Status badge canvas (circle)
         self.status_canvas = tk.Canvas(header_frame, width=130, height=35, bg=self.colors["bg"], highlightthickness=0)
@@ -505,9 +537,9 @@ class ModernPrintGatewayGUI:
         )
         self.btn_dash.pack(fill="x", pady=4)
 
-        self.btn_switch = ModernButton(
+        self.btn_logout = ModernButton(
             actions_card,
-            text="Switch User 🔄",
+            text="Logout 🔓",
             command=self.show_login_screen,
             bg_color="#4b5563",
             fg_color="white",
@@ -516,7 +548,7 @@ class ModernPrintGatewayGUI:
             pady=6,
             padx=15
         )
-        self.btn_switch.pack(fill="x", pady=4)
+        self.btn_logout.pack(fill="x", pady=4)
 
         # 3. CONSOLE LOGS SECTION
         console_lbl = tk.Label(

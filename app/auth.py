@@ -9,6 +9,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import urllib.parse
 
 _LOGIN_URL = "https://api.swifthub.net/api/identity/v1/Authentication/login"
 
@@ -98,4 +99,40 @@ def login_user(login_credential: str, password: str) -> dict:
         "userId":            payload.get("UserId", login_credential),
         "userType":          data.get("userType", ""),
         "needChangePassword": data.get("needChangePassword", False),
+    }
+
+
+def get_user_info(user_id: str, token: str) -> dict:
+    """
+    Fetch full user profile from SwiftHub.
+    GET /api/identity/v1/User/getUserInfo?id=<user_id>
+
+    Returns a dict with the useful fields:
+        fullName, email, userName, tenantName, userTypeName, userRoles, isActive
+    """
+    url = f"https://api.swifthub.net/api/identity/v1/User/getUserInfo?id={urllib.parse.quote(user_id)}"
+    headers = {
+        "Accept":        "application/json",
+        "Authorization": f"Bearer {token}",
+    }
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            body = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"getUserInfo failed: HTTP {e.code}") from None
+
+    if body.get("status") != 1:
+        raise RuntimeError(body.get("message") or "getUserInfo returned error")
+
+    d = body.get("data", {})
+    return {
+        "id":           d.get("id", user_id),
+        "fullName":     d.get("fullName", ""),
+        "email":        d.get("email", ""),
+        "userName":     d.get("userName", ""),
+        "tenantName":   d.get("tenantName", ""),
+        "userTypeName": d.get("userTypeName", ""),
+        "isActive":     d.get("isActive", True),
+        "userRoles":    [r.get("roleName", "") for r in d.get("userRoles", [])],
     }
