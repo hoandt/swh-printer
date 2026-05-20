@@ -286,6 +286,35 @@ class ModernPrintGatewayGUI:
         )
         self.lock_checkbox.pack(side="left")
 
+        # Station ID Configuration Field
+        station_lbl = tk.Label(config_card, text="Station ID:", font=("Helvetica", 10, "bold"), fg=self.colors["text_muted"], bg=self.colors["card"])
+        station_lbl.grid(row=4, column=0, sticky="w", pady=6)
+
+        self.station_var = tk.StringVar(value=Config.STATION_ID)
+        self.station_entry = tk.Entry(
+            config_card,
+            textvariable=self.station_var,
+            font=("Helvetica", 10),
+            bg=self.colors["bg"],
+            fg=self.colors["text"],
+            insertbackground=self.colors["text"],
+            bd=1,
+            relief="solid",
+            width=20
+        )
+        self.station_entry.grid(row=4, column=1, sticky="w", padx=10, pady=3)
+
+        def on_station_change(*args):
+            Config.STATION_ID = self.station_var.get().strip() or "UNKNOWN_STATION"
+            # Update the session header dynamically!
+            self.gateway.session.headers.update({
+                "X-Station-ID": Config.STATION_ID
+            })
+            DashboardState.station_id = Config.STATION_ID
+            logger.info(f"Station ID updated to: {Config.STATION_ID}")
+
+        self.station_var.trace_add("write", on_station_change)
+
         # --- Right Side: Actions Card ---
         actions_card = tk.LabelFrame(
             top_grid,
